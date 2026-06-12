@@ -1,0 +1,99 @@
+diff --git a/adapter/provider/adapter.go b/adapter/provider/adapter.go
+index bcbbebb47..d1b7adab5 100644
+--- a/adapter/provider/adapter.go
++++ b/adapter/provider/adapter.go
+@@ -111,15 +111,33 @@ func (a *Adapter) Outbound(tag string) (adapter.Outbound, bool) {
+ 	return detour, ok
+ }
+ 
++func (a *Adapter) shouldHideProvider() bool {
++	providerManager := service.FromContext[adapter.ProviderManager](a.ctx)
++	if providerManager == nil {
++		return false
++	}
++	// 只有一个 provider 时隐藏 provider 前缀，保持导出的标签更简洁。
++	return len(providerManager.Providers()) <= 1
++}
++
+ func (a *Adapter) resolveOutboundTags(newOpts []option.Outbound) []string {
+ 	tags := make([]string, len(newOpts))
+ 	seen := make(map[string]bool)
++	hideProvider := a.shouldHideProvider()
+ 	for i, opt := range newOpts {
+ 		var baseTag string
+ 		if opt.Tag != "" {
+-			baseTag = F.ToString(a.providerTag, "/", opt.Tag)
++			if hideProvider {
++				baseTag = opt.Tag
++			} else {
++				baseTag = F.ToString(a.providerTag, "/", opt.Tag)
++			}
+ 		} else {
+-			baseTag = F.ToString(a.providerTag, "/", i)
++			if hideProvider {
++				baseTag = F.ToString(i)
++			} else {
++				baseTag = F.ToString(a.providerTag, "/", i)
++			}
+ 		}
+ 		tag := baseTag
+ 		for n := 2; seen[tag]; n++ {
+@@ -291,10 +309,15 @@ func (a *Adapter) healthcheck(ctx context.Context) (map[string]uint16, error) {
+ }
+ 
+ func (a *Adapter) RewriteDetourForProvider(opts []option.Outbound) {
++	hideProvider := a.shouldHideProvider()
+ 	tagMapping := make(map[string]string)
+ 	for _, opt := range opts {
+ 		if opt.Tag != "" {
+-			tagMapping[opt.Tag] = F.ToString(a.providerTag, "/", opt.Tag)
++			if hideProvider {
++				tagMapping[opt.Tag] = opt.Tag
++			} else {
++				tagMapping[opt.Tag] = F.ToString(a.providerTag, "/", opt.Tag)
++			}
+ 		}
+ 	}
+ 	for _, opt := range opts {
+@@ -309,10 +332,15 @@ func (a *Adapter) RewriteDetourForProvider(opts []option.Outbound) {
+ }
+ 
+ func (a *Adapter) RewriteDetourForProviderEndpoints(opts []option.Endpoint) {
++	hideProvider := a.shouldHideProvider()
+ 	tagMapping := make(map[string]string)
+ 	for _, opt := range opts {
+ 		if opt.Tag != "" {
+-			tagMapping[opt.Tag] = F.ToString(a.providerTag, "/", opt.Tag)
++			if hideProvider {
++				tagMapping[opt.Tag] = opt.Tag
++			} else {
++				tagMapping[opt.Tag] = F.ToString(a.providerTag, "/", opt.Tag)
++			}
+ 		}
+ 	}
+ 	for _, opt := range opts {
+@@ -329,12 +357,21 @@ func (a *Adapter) RewriteDetourForProviderEndpoints(opts []option.Endpoint) {
+ func (a *Adapter) resolveEndpointTags(newOpts []option.Endpoint) []string {
+ 	tags := make([]string, len(newOpts))
+ 	seen := make(map[string]bool)
++	hideProvider := a.shouldHideProvider()
+ 	for i, opt := range newOpts {
+ 		var baseTag string
+ 		if opt.Tag != "" {
+-			baseTag = F.ToString(a.providerTag, "/", opt.Tag)
++			if hideProvider {
++				baseTag = opt.Tag
++			} else {
++				baseTag = F.ToString(a.providerTag, "/", opt.Tag)
++			}
+ 		} else {
+-			baseTag = F.ToString(a.providerTag, "/endpoint-", i)
++			if hideProvider {
++				baseTag = F.ToString("endpoint-", i)
++			} else {
++				baseTag = F.ToString(a.providerTag, "/endpoint-", i)
++			}
+ 		}
+ 		tag := baseTag
+ 		for n := 2; seen[tag]; n++ {
+

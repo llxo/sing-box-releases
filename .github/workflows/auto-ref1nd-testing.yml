@@ -1,0 +1,54 @@
+name: Auto reF1nd Testing Android arm64
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Upstream release tag; leave empty for latest testing"
+        required: false
+        type: string
+      force_build:
+        description: "Build even if the release already exists"
+        required: true
+        default: false
+        type: boolean
+  schedule:
+    - cron: "37 20 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-ref1nd-testing
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build testing Android arm64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout build recipes
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ~1.25.10
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r28
+          local-cache: true
+
+      - name: Build and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_SOURCE_REPO: reF1nd/sing-box
+          UPSTREAM_RELEASE_REPO: reF1nd/sing-box-releases
+          RELEASE_KIND: testing
+          PATCH_FILE: patches/provider.patch
+          INPUT_TAG: ${{ inputs.tag }}
+          FORCE_BUILD: ${{ inputs.force_build }}
+        run: bash scripts/build-android-arm64.sh
+
