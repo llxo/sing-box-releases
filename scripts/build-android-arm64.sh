@@ -74,9 +74,8 @@ fi
 
 pushd "${source_dir}" >/dev/null
 
-# 核心流程：先做 dry-run，补丁失效时让 workflow 直接失败，避免构建未打补丁的产物。
-git apply --check "${patch_path}"
-git apply "${patch_path}"
+# 核心流程：灵活应用补丁，支持行号偏移和 3-way merge
+bash "${workspace}/scripts/apply-patch-flexible.sh" "${patch_path}"
 
 go test ./adapter/provider
 
