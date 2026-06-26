@@ -68,9 +68,10 @@ jobs:
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ~1.25.10
+          cache: false
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
