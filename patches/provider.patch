@@ -1,8 +1,8 @@
 diff --git a/adapter/provider/adapter.go b/adapter/provider/adapter.go
-index bcbbebb47..d1b7adab5 100644
+index d91cb3a4c..3ca61ded6 100644
 --- a/adapter/provider/adapter.go
 +++ b/adapter/provider/adapter.go
-@@ -111,15 +111,33 @@ func (a *Adapter) Outbound(tag string) (adapter.Outbound, bool) {
+@@ -116,15 +116,33 @@ func (a *Adapter) Outbound(tag string) (adapter.Outbound, bool) {
  	return detour, ok
  }
  
@@ -38,10 +38,10 @@ index bcbbebb47..d1b7adab5 100644
  		}
  		tag := baseTag
  		for n := 2; seen[tag]; n++ {
-@@ -291,10 +309,15 @@ func (a *Adapter) healthcheck(ctx context.Context) (map[string]uint16, error) {
+@@ -303,16 +321,25 @@ func (a *Adapter) healthcheck(ctx context.Context) (map[string]uint16, error) {
  }
  
- func (a *Adapter) RewriteDetourForProvider(opts []option.Outbound) {
+ func (a *Adapter) RewriteDetourForProvider(opts []option.Outbound, endpointOpts ...[]option.Endpoint) {
 +	hideProvider := a.shouldHideProvider()
  	tagMapping := make(map[string]string)
  	for _, opt := range opts {
@@ -54,11 +54,22 @@ index bcbbebb47..d1b7adab5 100644
 +			}
  		}
  	}
- 	for _, opt := range opts {
-@@ -309,10 +332,15 @@ func (a *Adapter) RewriteDetourForProvider(opts []option.Outbound) {
+ 	for _, endpoints := range endpointOpts {
+ 		for _, opt := range endpoints {
+ 			if opt.Tag != "" {
+-				tagMapping[opt.Tag] = F.ToString(a.providerTag, "/", opt.Tag)
++				if hideProvider {
++					tagMapping[opt.Tag] = opt.Tag
++				} else {
++					tagMapping[opt.Tag] = F.ToString(a.providerTag, "/", opt.Tag)
++				}
+ 			}
+ 		}
+ 	}
+@@ -328,16 +355,25 @@ func (a *Adapter) RewriteDetourForProvider(opts []option.Outbound, endpointOpts
  }
  
- func (a *Adapter) RewriteDetourForProviderEndpoints(opts []option.Endpoint) {
+ func (a *Adapter) RewriteDetourForProviderEndpoints(opts []option.Endpoint, outboundOpts ...[]option.Outbound) {
 +	hideProvider := a.shouldHideProvider()
  	tagMapping := make(map[string]string)
  	for _, opt := range opts {
@@ -71,8 +82,19 @@ index bcbbebb47..d1b7adab5 100644
 +			}
  		}
  	}
- 	for _, opt := range opts {
-@@ -329,12 +357,21 @@ func (a *Adapter) RewriteDetourForProviderEndpoints(opts []option.Endpoint) {
+ 	for _, outbounds := range outboundOpts {
+ 		for _, opt := range outbounds {
+ 			if opt.Tag != "" {
+-				tagMapping[opt.Tag] = F.ToString(a.providerTag, "/", opt.Tag)
++				if hideProvider {
++					tagMapping[opt.Tag] = opt.Tag
++				} else {
++					tagMapping[opt.Tag] = F.ToString(a.providerTag, "/", opt.Tag)
++				}
+ 			}
+ 		}
+ 	}
+@@ -355,12 +391,21 @@ func (a *Adapter) RewriteDetourForProviderEndpoints(opts []option.Endpoint, outb
  func (a *Adapter) resolveEndpointTags(newOpts []option.Endpoint) []string {
  	tags := make([]string, len(newOpts))
  	seen := make(map[string]bool)
@@ -96,4 +118,3 @@ index bcbbebb47..d1b7adab5 100644
  		}
  		tag := baseTag
  		for n := 2; seen[tag]; n++ {
-

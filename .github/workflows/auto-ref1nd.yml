@@ -84,7 +84,7 @@ jobs:
           UPSTREAM_SOURCE_REPO: reF1nd/sing-box
           UPSTREAM_RELEASE_REPO: reF1nd/sing-box-releases
           RELEASE_KIND: ${{ matrix.release_kind }}
-          PATCH_FILE: patches/provider${{ matrix.release_kind == 'testing' && '-testing' || '' }}.patch
+          PATCH_FILE: patches/provider.patch
           INPUT_TAG: ${{ inputs.tag }}
           FORCE_BUILD: ${{ inputs.force_build }}
         run: bash scripts/build-android-arm64.sh
