@@ -79,6 +79,17 @@ jobs:
           ndk-version: r28
           local-cache: true
 
+      - name: Cache Go modules & build
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ matrix.release_kind }}-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{ matrix.release_kind }}-
+            ${{ runner.os }}-go-
+
       - name: Build and publish
         env:
           GH_TOKEN: ${{ github.token }}
