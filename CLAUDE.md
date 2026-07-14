@@ -5,9 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this repository is
 
 This is a **build-recipe** repository, not a source tree. It does **not** vendor any Go
-code. GitHub Actions clone `reF1nd/sing-box`, check out a selected upstream release tag,
+code. GitHub Actions clone `reF1nd/sing-box`, check out the selected source branch,
 apply `patches/provider.patch`, build a single **Android arm64** `sing-box` binary, and
-publish it to this repository's GitHub Releases.
+publish it to this repository's GitHub Releases using the selected upstream release tag.
 
 The entire tracked surface is: one workflow, two shell scripts, one patch, and the README.
 `source/`, `dist/`, and `tmp/` are gitignored — they are CI clone targets and local scratch,
@@ -32,11 +32,14 @@ The build is driven entirely from CI; there is no local application to run.
 - Resolve the target `tag`: use `INPUT_TAG` if given, else query the **release repo**
   (`UPSTREAM_RELEASE_REPO`, default `reF1nd/sing-box-releases`) for the latest tag matching
   the kind. Note the asymmetry: tags are *listed* from the release repo, but source is
-  *cloned* from `UPSTREAM_SOURCE_REPO` (`reF1nd/sing-box`).
+  *cloned* from `UPSTREAM_SOURCE_REPO` (`reF1nd/sing-box`) by branch.
+- Resolve the source branch: `stable` uses `UPSTREAM_STABLE_BRANCH` (default
+  `reF1nd-stable`); `testing` uses `UPSTREAM_TESTING_BRANCH` (currently defaulted by the
+  workflow to `reF1nd-testing-next`, and manually overrideable via `testing_source_branch`).
 - Validate: the tag's `isPrerelease` must match the kind (`stable`→false, `testing`→true),
   and `testing` tags must contain `-(alpha|beta|rc)[.-]`.
 - Skip if a same-tag release already exists in this repo, unless `FORCE_BUILD=true`.
-- Shallow-clone (`--depth 1 --branch <tag>`) the source, apply the patch, then run
+- Shallow-clone (`--depth 1 --branch <source_branch> --single-branch`) the source, apply the patch, then run
   `go test ./adapter/provider` as a gate (the patch lives in that package).
 - Build: install the `cmd/internal/build` wrapper, then `build go build ...`. The wrapper
   (`go install ./cmd/internal/build`) injects Android NDK SDK paths via `build_shared.FindSDK()`
@@ -51,7 +54,9 @@ The build is driven entirely from CI; there is no local application to run.
 A single `patches/provider.patch` serves both. The distinction is purely in tag selection:
 `stable` = newest non-prerelease `v*` tag; `testing` = newest prerelease tag matching
 `-(alpha|beta|rc)[.-]`. The shared patch is verified to apply to both the `reF1nd-stable`
-and `reF1nd-testing` upstream branches.
+and current testing upstream branches. As of 2026-07-14 the workflow default is
+`reF1nd-testing-next`; if upstream moves testing back, change the workflow default back to
+`reF1nd-testing`.
 
 ## The patch
 
@@ -74,7 +79,7 @@ git diff > /abs/path/patches/provider.patch
 git checkout -- .
 
 # verify it still applies to both lines before committing
-for b in reF1nd-stable reF1nd-testing; do
+for b in reF1nd-stable reF1nd-testing-next; do
   git checkout -q "$b" && git checkout -- .
   git apply --check /abs/path/patches/provider.patch && echo "$b OK"
 done

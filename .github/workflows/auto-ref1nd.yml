@@ -14,6 +14,11 @@ on:
         description: "Upstream release tag; leave empty for latest"
         required: false
         type: string
+      testing_source_branch:
+        description: "Testing source branch; leave empty for current default"
+        required: false
+        default: reF1nd-testing-next
+        type: string
       force_build:
         description: "Build even if the release already exists"
         required: true
@@ -95,6 +100,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           UPSTREAM_SOURCE_REPO: reF1nd/sing-box
           UPSTREAM_RELEASE_REPO: reF1nd/sing-box-releases
+          UPSTREAM_STABLE_BRANCH: reF1nd-stable
+          UPSTREAM_TESTING_BRANCH: ${{ inputs.testing_source_branch || 'reF1nd-testing-next' }}
           RELEASE_KIND: ${{ matrix.release_kind }}
           PATCH_FILE: patches/provider.patch
           INPUT_TAG: ${{ inputs.tag }}

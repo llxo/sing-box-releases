@@ -13,17 +13,21 @@ source_dir="${workspace}/source"
 dist_dir="${workspace}/dist"
 input_tag="${INPUT_TAG:-}"
 force_build="${FORCE_BUILD:-false}"
+upstream_stable_branch="${UPSTREAM_STABLE_BRANCH:-reF1nd-stable}"
+upstream_testing_branch="${UPSTREAM_TESTING_BRANCH:-reF1nd-testing-next}"
 
 case "${RELEASE_KIND}" in
   stable)
     prerelease_flag="false"
     release_title_suffix="stable"
     latest_tag_query='[.[] | select(.isPrerelease == false and (.tagName | startswith("v")))][0].tagName // ""'
+    source_branch="${upstream_stable_branch}"
     ;;
   testing)
     prerelease_flag="true"
     release_title_suffix="testing"
     latest_tag_query='[.[] | select(.isPrerelease == true and (.tagName | test("-(alpha|beta|rc)[.-]")))][0].tagName // ""'
+    source_branch="${upstream_testing_branch}"
     ;;
   *)
     echo "Unsupported RELEASE_KIND: ${RELEASE_KIND}" >&2
@@ -58,13 +62,13 @@ if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 && [[ 
   exit 0
 fi
 
-if ! git ls-remote --exit-code --tags "https://github.com/${UPSTREAM_SOURCE_REPO}.git" "refs/tags/${tag}" >/dev/null; then
-  echo "Source tag ${tag} not found in ${UPSTREAM_SOURCE_REPO}" >&2
+if ! git ls-remote --exit-code --heads "https://github.com/${UPSTREAM_SOURCE_REPO}.git" "refs/heads/${source_branch}" >/dev/null; then
+  echo "Source branch ${source_branch} not found in ${UPSTREAM_SOURCE_REPO}" >&2
   exit 1
 fi
 
 rm -rf "${source_dir}" "${dist_dir}"
-git clone --depth 1 --branch "${tag}" "https://github.com/${UPSTREAM_SOURCE_REPO}.git" "${source_dir}"
+git clone --depth 1 --branch "${source_branch}" --single-branch "https://github.com/${UPSTREAM_SOURCE_REPO}.git" "${source_dir}"
 
 patch_path="${workspace}/${PATCH_FILE}"
 if [[ ! -f "${patch_path}" ]]; then
@@ -100,7 +104,8 @@ popd >/dev/null
 notes="$(cat <<EOF
 Automated reF1nd ${release_title_suffix} Android arm64 build.
 
-Source: ${UPSTREAM_SOURCE_REPO}@${tag}
+Release tag: ${tag}
+Source: ${UPSTREAM_SOURCE_REPO}@${source_branch}
 Source commit: ${source_sha}
 Patch: ${PATCH_FILE}
 EOF
@@ -117,4 +122,3 @@ else
   fi
   gh "${release_args[@]}" "${dist_dir}/sing-box"
 fi
-
