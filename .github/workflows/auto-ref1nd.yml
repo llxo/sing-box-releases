@@ -1,4 +1,4 @@
-name: Auto reF1nd Android arm64
+name: Auto reF1nd Android arm64 and Windows amd64
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ on:
       testing_source_branch:
         description: "Testing source branch; leave empty for current default"
         required: false
-        default: reF1nd-testing-next
+        default: reF1nd-testing
         type: string
       force_build:
         description: "Build even if the release already exists"
@@ -62,7 +62,7 @@ jobs:
           fi
 
   build:
-    name: Build ${{ matrix.release_kind }} Android arm64
+    name: Build ${{ matrix.release_kind }} Android arm64 and Windows amd64
     runs-on: ubuntu-latest
     needs: determine-matrix
     strategy:
@@ -101,9 +101,9 @@ jobs:
           UPSTREAM_SOURCE_REPO: reF1nd/sing-box
           UPSTREAM_RELEASE_REPO: reF1nd/sing-box-releases
           UPSTREAM_STABLE_BRANCH: reF1nd-stable
-          UPSTREAM_TESTING_BRANCH: ${{ inputs.testing_source_branch || 'reF1nd-testing-next' }}
+          UPSTREAM_TESTING_BRANCH: ${{ inputs.testing_source_branch || 'reF1nd-testing' }}
           RELEASE_KIND: ${{ matrix.release_kind }}
           PATCH_FILE: patches/provider.patch
           INPUT_TAG: ${{ inputs.tag }}
           FORCE_BUILD: ${{ inputs.force_build }}
-        run: bash scripts/build-android-arm64.sh
+        run: bash scripts/build-release.sh
