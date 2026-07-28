@@ -95,11 +95,23 @@ go install -v ./cmd/internal/build
 export CC="aarch64-linux-android23-clang"
 export CXX="${CC}++"
 
-mkdir -p "${dist_dir}"
-CGO_ENABLED=1 GOOS=android GOARCH=arm64 build go build -v -trimpath -o "${dist_dir}/sing-box" -tags "${android_build_tags}" \
+# Android 也按上游包名风格打包成压缩归档，随 LICENSE 一起分发。
+android_package_name="sing-box-${version}-android-arm64"
+android_package_dir="${dist_dir}/${android_package_name}"
+android_archive="${dist_dir}/${android_package_name}.zip"
+mkdir -p "${android_package_dir}"
+
+CGO_ENABLED=1 GOOS=android GOARCH=arm64 build go build -v -trimpath -o "${android_package_dir}/sing-box" -tags "${android_build_tags}" \
   -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${version}' ${ldflags_shared} -s -w -buildid=" \
   ./cmd/sing-box
-chmod +x "${dist_dir}/sing-box"
+chmod +x "${android_package_dir}/sing-box"
+cp LICENSE "${android_package_dir}/LICENSE"
+
+(
+  cd "${dist_dir}"
+  zip -q -r "${android_archive}" "${android_package_name}"
+)
+rm -rf "${android_package_dir}"
 
 # Windows amd64 按上游发布配置启用 purego/Naive，并与 libcronet.dll 一起打包。
 windows_package_name="sing-box-${version}-windows-amd64"
@@ -150,13 +162,13 @@ Automated reF1nd ${release_title_suffix} builds for Android arm64 and Windows am
 
 | 平台 | 架构 | 下载 |
 | --- | --- | --- |
-| Android | arm64 | [sing-box](${download_base_url}/sing-box) |
+| Android | arm64 | [${android_package_name}.zip](${download_base_url}/${android_package_name}.zip) |
 | Windows | amd64 | [${windows_package_name}.zip](${download_base_url}/${windows_package_name}.zip) |
 EOF
 )"
 
 # 核心流程：同名 Release 存在时只替换资产，避免重复创建 tag 或 release。
-release_assets=("${dist_dir}/sing-box" "${windows_archive}")
+release_assets=("${android_archive}" "${windows_archive}")
 if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
   gh release upload "${tag}" --repo "${GITHUB_REPOSITORY}" "${release_assets[@]}" --clobber
   gh release edit "${tag}" --repo "${GITHUB_REPOSITORY}" --draft=false --prerelease="${prerelease_flag}" --notes "${notes}"
