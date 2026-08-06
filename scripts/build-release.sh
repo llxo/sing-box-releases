@@ -90,6 +90,17 @@ android_build_tags="$(cat release/DEFAULT_BUILD_TAGS_OTHERS)"
 windows_build_tags="$(cat release/DEFAULT_BUILD_TAGS_WINDOWS)"
 ldflags_shared="$(cat release/LDFLAGS)"
 
+# testing 默认启用 eBPF（with_ebpf tag + 生成 BPF 对象）
+if [[ "${RELEASE_KIND}" == "testing" && -d common/ebpf ]]; then
+  android_build_tags="${android_build_tags},with_ebpf"
+  export BPF_CLANG="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android33-clang"
+  make -C common/ebpf generate
+  if [[ ! -f common/ebpf/native/shared_network.bpf.o ]]; then
+    echo "eBPF object was not generated" >&2
+    exit 1
+  fi
+fi
+
 go install -v ./cmd/internal/build
 
 export CC="aarch64-linux-android23-clang"

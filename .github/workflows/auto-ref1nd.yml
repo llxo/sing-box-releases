@@ -10,14 +10,10 @@ on:
         options:
           - stable
           - testing
+        default: testing
       tag:
         description: "Upstream release tag; leave empty for latest"
         required: false
-        type: string
-      testing_source_branch:
-        description: "Testing source branch; leave empty for current default"
-        required: false
-        default: reF1nd-testing
         type: string
       force_build:
         description: "Build even if the release already exists"
@@ -36,37 +32,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  determine-matrix:
-    name: Determine build matrix
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-    steps:
-      - id: set-matrix
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            # 手动触发：使用用户选择的 release_kind
-            echo "matrix={\"include\":[{\"release_kind\":\"${{ inputs.release_kind }}\"}]}" >> "$GITHUB_OUTPUT"
-          else
-            # 定时触发：根据 cron 时间判断
-            hour=$(date -u +%H)
-            minute=$(date -u +%M)
-            if [[ "$hour" == "20" && "$minute" == "17" ]]; then
-              echo "matrix={\"include\":[{\"release_kind\":\"stable\"}]}" >> "$GITHUB_OUTPUT"
-            elif [[ "$hour" == "20" && "$minute" == "37" ]]; then
-              echo "matrix={\"include\":[{\"release_kind\":\"testing\"}]}" >> "$GITHUB_OUTPUT"
-            else
-              # 其他时间：同时构建两个
-              echo "matrix={\"include\":[{\"release_kind\":\"stable\"},{\"release_kind\":\"testing\"}]}" >> "$GITHUB_OUTPUT"
-            fi
-          fi
-
   build:
     name: Build ${{ matrix.release_kind }} Android arm64 and Windows amd64
     runs-on: ubuntu-latest
-    needs: determine-matrix
     strategy:
-      matrix: ${{ fromJson(needs.determine-matrix.outputs.matrix) }}
+      matrix:
+        include:
+          - release_kind: stable
+            cron: "17 20 * * *"
+          - release_kind: testing
+            cron: "37 20 * * *"
       fail-fast: false
     steps:
       - name: Checkout build recipes
@@ -96,12 +71,15 @@ jobs:
             ${{ runner.os }}-go-
 
       - name: Build and publish
+        if: >-
+          (github.event_name == 'workflow_dispatch' && inputs.release_kind == matrix.release_kind) ||
+          (github.event_name == 'schedule' && github.event.schedule == matrix.cron)
         env:
           GH_TOKEN: ${{ github.token }}
           UPSTREAM_SOURCE_REPO: reF1nd/sing-box
           UPSTREAM_RELEASE_REPO: reF1nd/sing-box-releases
           UPSTREAM_STABLE_BRANCH: reF1nd-stable
-          UPSTREAM_TESTING_BRANCH: ${{ inputs.testing_source_branch || 'reF1nd-testing' }}
+          UPSTREAM_TESTING_BRANCH: reF1nd-testing
           RELEASE_KIND: ${{ matrix.release_kind }}
           PATCH_FILE: patches/provider.patch
           INPUT_TAG: ${{ inputs.tag }}
