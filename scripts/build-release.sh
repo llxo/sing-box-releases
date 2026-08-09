@@ -140,13 +140,25 @@ cronet_dir="$(mktemp -d)"
 trap 'rm -rf "${cronet_dir}"' EXIT
 git init "${cronet_dir}"
 git -C "${cronet_dir}" remote add origin https://github.com/sagernet/cronet-go.git
-git -C "${cronet_dir}" fetch --depth=1 origin "${cronet_go_version}"
+
+git -C "${cronet_dir}" sparse-checkout set --no-cone "/lib/windows_amd64/libcronet.dll"
+git -C "${cronet_dir}" fetch --depth=1 --filter=blob:none origin "${cronet_go_version}"
 git -C "${cronet_dir}" checkout FETCH_HEAD
-CGO_ENABLED=0 go -C "${cronet_dir}" build -v -o "${cronet_dir}/build-naive" ./cmd/build-naive
-GOPROXY=direct GOSUMDB=off "${cronet_dir}/build-naive" extract-lib --target windows/amd64 -o "${windows_package_dir}"
+if [[ -f "${cronet_dir}/lib/windows_amd64/libcronet.dll" ]]; then
+  cp "${cronet_dir}/lib/windows_amd64/libcronet.dll" "${windows_package_dir}/libcronet.dll"
+else
+  rm -rf "${cronet_dir}"
+  mkdir -p "${cronet_dir}"
+  git init "${cronet_dir}"
+  git -C "${cronet_dir}" remote add origin https://github.com/sagernet/cronet-go.git
+  git -C "${cronet_dir}" fetch --depth=1 origin "${cronet_go_version}"
+  git -C "${cronet_dir}" checkout FETCH_HEAD
+  CGO_ENABLED=0 go -C "${cronet_dir}" build -v -o "${cronet_dir}/build-naive" ./cmd/build-naive
+  GOPROXY=direct GOSUMDB=off "${cronet_dir}/build-naive" extract-lib --target windows/amd64 -o "${windows_package_dir}"
+fi
 
 if [[ ! -f "${windows_package_dir}/libcronet.dll" ]]; then
-  echo "libcronet.dll was not extracted" >&2
+  echo "libcronet.dll is missing" >&2
   exit 1
 fi
 
