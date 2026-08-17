@@ -104,9 +104,10 @@ jobs:
           cache: false
 
       - name: Setup Android NDK
+        id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r28
+          ndk-version: r29
           local-cache: true
 
       - name: Cache Go modules & build
@@ -173,13 +174,14 @@ jobs:
       - name: Generate eBPF
         if: env.SKIP_BUILD != 'true'
         working-directory: ${{ env.SOURCE_DIR }}
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           set -euo pipefail
 
           if [[ -d common/ebpf ]]; then
-            export BPF_CLANG="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android33-clang"
             make -C common/ebpf generate
-            [[ -f common/ebpf/native/shared_network.bpf.o ]] || { echo "eBPF object was not generated" >&2; exit 1; }
+            [[ -f common/ebpf/internal/bpfgen/shared_network_bpfel.o ]] || { echo "eBPF object was not generated" >&2; exit 1; }
           fi
 
       - name: Build Android
