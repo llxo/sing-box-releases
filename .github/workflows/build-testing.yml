@@ -100,7 +100,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: ~1.25.10
+          go-version: 1.26.6
           cache: false
 
       - name: Setup Android NDK
@@ -108,7 +108,6 @@ jobs:
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r29
-          local-cache: true
 
       - name: Cache Go modules & build
         uses: actions/cache@v5
@@ -168,8 +167,6 @@ jobs:
           echo "WINDOWS_BUILD_TAGS=$(cat release/DEFAULT_BUILD_TAGS_WINDOWS)" >> "${GITHUB_ENV}"
           echo "LDFLAGS_SHARED=$(cat release/LDFLAGS)" >> "${GITHUB_ENV}"
           go install -v ./cmd/internal/build
-          echo "CC=aarch64-linux-android23-clang" >> "${GITHUB_ENV}"
-          echo "CXX=aarch64-linux-android23-clang++" >> "${GITHUB_ENV}"
 
       - name: Generate eBPF
         if: env.SKIP_BUILD != 'true'
@@ -187,6 +184,10 @@ jobs:
       - name: Build Android
         if: env.SKIP_BUILD != 'true'
         working-directory: ${{ env.SOURCE_DIR }}
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          CC: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android23-clang
+          CXX: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android23-clang++
         run: |
           set -euo pipefail
 
