@@ -1,6 +1,6 @@
 # sing-box releases
 
-[上游](https://github.com/reF1nd/sing-box)，修改了在仅有单个 provider 时隐藏 `tag/` 前缀，自动构建 `reF1nd-stable` 和 `reF1nd-testing` 分支的最新版本。
+[上游](https://github.com/reF1nd/sing-box)，移除了 provider 的 `tag/` 前缀，自动构建 `reF1nd-stable` 和 `reF1nd-testing` 分支的最新版本。
 
 每个 Release 包含两个构建产物：
 
