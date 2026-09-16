@@ -73,7 +73,6 @@ jobs:
           {
             echo "TAG=${tag}"
             echo "VERSION=${tag#v}"
-            echo "PRERELEASE_FLAG=${prerelease_flag}"
             echo "RELEASE_TITLE_SUFFIX=${release_title_suffix}"
             echo "WORKSPACE=${workspace}"
             echo "SOURCE_DIR=${source_dir}"
@@ -287,7 +286,7 @@ jobs:
           release_assets=("${android_archive}" "${windows_archive}")
           if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release upload "${TAG}" --repo "${GITHUB_REPOSITORY}" "${release_assets[@]}" --clobber
-            gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false --prerelease="${PRERELEASE_FLAG}" --notes "${notes}"
+            gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false --prerelease=false --notes "${notes}"
           else
-            gh release create "${TAG}" --repo "${GITHUB_REPOSITORY}" --title "${TAG}" --notes "${notes}" --prerelease "${release_assets[@]}"
+            gh release create "${TAG}" --repo "${GITHUB_REPOSITORY}" --title "${TAG}" --notes "${notes}" "${release_assets[@]}"
           fi
