@@ -23,73 +23,300 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build stable Android arm64 and Windows amd64
+  prepare:
+    name: Prepare build & resolve tag
     runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ github.token }}
-      UPSTREAM_SOURCE_REPO: reF1nd/sing-box
-      UPSTREAM_RELEASE_REPO: reF1nd/sing-box-releases
-      UPSTREAM_BRANCH: reF1nd-stable
-      ANDROID_CLIENT_BRANCH: main
-      PATCH_FILE: patches/provider.patch
-      INPUT_TAG: ${{ inputs.tag }}
-      FORCE_BUILD: ${{ inputs.force_build }}
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      source_sha: ${{ steps.resolve.outputs.source_sha }}
+      skip_build: ${{ steps.resolve.outputs.skip_build }}
     steps:
-      - name: Checkout build recipes
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
-
       - name: Prepare/resolve tag
-        id: prepare
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_SOURCE_REPO: reF1nd/sing-box
+          UPSTREAM_RELEASE_REPO: reF1nd/sing-box-releases
+          UPSTREAM_BRANCH: reF1nd-stable
+          INPUT_TAG: ${{ inputs.tag }}
+          FORCE_BUILD: ${{ inputs.force_build }}
+          PRERELEASE_FLAG: false
+          LATEST_TAG_QUERY: '[.[] | select(.isPrerelease == false and (.tagName | startswith("v")))][0].tagName // ""'
         run: |
           set -euo pipefail
 
           : "${GH_TOKEN:?GH_TOKEN is required}"
           : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 
-          workspace="${GITHUB_WORKSPACE:-$(pwd)}"
-          source_dir="${workspace}/source"
-          dist_dir="${workspace}/dist"
           input_tag="${INPUT_TAG:-}"
           force_build="${FORCE_BUILD:-false}"
-          prerelease_flag=false
-          release_title_suffix=stable
-          latest_tag_query='[.[] | select(.isPrerelease == false and (.tagName | startswith("v")))][0].tagName // ""'
 
           if [[ -n "${input_tag}" ]]; then
             tag="${input_tag}"
           else
-            tag="$(gh release list --repo "${UPSTREAM_RELEASE_REPO}" --limit 100 --json tagName,isPrerelease --jq "${latest_tag_query}")"
+            tag="$(gh release list --repo "${UPSTREAM_RELEASE_REPO}" --limit 100 --json tagName,isPrerelease --jq "${LATEST_TAG_QUERY}")"
           fi
           if [[ -z "${tag}" || "${tag}" != v* ]]; then
             echo "Invalid upstream release tag: ${tag}" >&2
             exit 1
           fi
           actual_prerelease="$(gh release view "${tag}" --repo "${UPSTREAM_RELEASE_REPO}" --json isPrerelease --jq .isPrerelease)"
-          if [[ "${actual_prerelease}" != "${prerelease_flag}" ]]; then
-            echo "Tag ${tag} prerelease=${actual_prerelease}, expected ${prerelease_flag} for stable" >&2
+          if [[ "${actual_prerelease}" != "${PRERELEASE_FLAG}" ]]; then
+            echo "Tag ${tag} prerelease=${actual_prerelease}, expected ${PRERELEASE_FLAG} for stable" >&2
             exit 1
           fi
 
-          {
-            echo "TAG=${tag}"
-            echo "VERSION=${tag#v}"
-            echo "RELEASE_TITLE_SUFFIX=${release_title_suffix}"
-            echo "WORKSPACE=${workspace}"
-            echo "SOURCE_DIR=${source_dir}"
-            echo "DIST_DIR=${dist_dir}"
-          } >> "${GITHUB_ENV}"
+          skip_build=false
+          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 && [[ "${force_build}" != true ]]; then
+            echo "Release ${tag} already exists in ${GITHUB_REPOSITORY}; set force_build=true to rebuild."
+            skip_build=true
+          fi
 
-      - name: Check release
-        if: env.TAG != ''
+          source_sha="$(git ls-remote "https://github.com/${UPSTREAM_SOURCE_REPO}.git" "refs/heads/${UPSTREAM_BRANCH}" | cut -f1)"
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "source_sha=${source_sha}" >> "$GITHUB_OUTPUT"
+          echo "skip_build=${skip_build}" >> "$GITHUB_OUTPUT"
+
+  build_android_cli:
+    name: Build Android arm64 CLI
+    needs: prepare
+    if: needs.prepare.outputs.skip_build != 'true'
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      UPSTREAM_SOURCE_REPO: reF1nd/sing-box
+      UPSTREAM_BRANCH: reF1nd-stable
+      PATCH_FILE: patches/provider.patch
+    steps:
+      - name: Checkout build recipes
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ~1.25.10
+          cache: false
+
+      - name: Setup Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r28
+
+      - name: Cache Go modules & build
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-android-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-go-android-
+            ${{ runner.os }}-go-
+
+      - name: Clone source
         run: |
           set -euo pipefail
+          rm -rf source dist
+          git clone --depth 1 --branch "${UPSTREAM_BRANCH}" --single-branch "https://github.com/${UPSTREAM_SOURCE_REPO}.git" source
 
-          force_build="${FORCE_BUILD:-false}"
-          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 && [[ "${force_build}" != true ]]; then
-            echo "Release ${TAG} already exists in ${GITHUB_REPOSITORY}; set force_build=true to rebuild."
-            echo "SKIP_BUILD=true" >> "${GITHUB_ENV}"
+      - name: Apply patch
+        working-directory: source
+        run: |
+          set -euo pipefail
+          patch_path="${GITHUB_WORKSPACE}/${PATCH_FILE}"
+          [[ -f "${patch_path}" ]] || { echo "Patch file not found: ${patch_path}" >&2; exit 1; }
+          if git apply --check "${patch_path}" 2>/dev/null; then
+            git apply "${patch_path}"
+            echo "Patch applied cleanly"
+          else
+            echo "Patch does not apply. Details:" >&2
+            git apply --check -v "${patch_path}" >&2 || true
+            exit 1
           fi
+
+      - name: Test provider
+        working-directory: source
+        run: |
+          set -euo pipefail
+          go test ./adapter/provider
+
+      - name: Setup build variables
+        working-directory: source
+        run: |
+          set -euo pipefail
+          echo "ANDROID_BUILD_TAGS=$(cat release/DEFAULT_BUILD_TAGS_OTHERS),with_ebpf" >> "$GITHUB_ENV"
+          echo "LDFLAGS_SHARED=$(cat release/LDFLAGS)" >> "$GITHUB_ENV"
+          go install -v ./cmd/internal/build
+
+      - name: Generate eBPF
+        working-directory: source
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          set -euo pipefail
+          if [[ -d common/ebpf ]]; then
+            make -C common/ebpf generate
+            [[ -f common/ebpf/internal/bpfgen/shared_network_bpfel.o ]] || { echo "eBPF object was not generated" >&2; exit 1; }
+          fi
+
+      - name: Build Android
+        working-directory: source
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          CC: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android23-clang
+          CXX: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android23-clang++
+        run: |
+          set -euo pipefail
+          android_package_name="sing-box-${VERSION}-android-arm64"
+          android_package_dir="${GITHUB_WORKSPACE}/dist/${android_package_name}"
+          mkdir -p "${android_package_dir}"
+          CGO_ENABLED=1 GOOS=android GOARCH=arm64 build go build -v -trimpath -o "${android_package_dir}/sing-box" -tags "${ANDROID_BUILD_TAGS}" \
+            -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${VERSION}' ${LDFLAGS_SHARED} -s -w -buildid=" ./cmd/sing-box
+          chmod +x "${android_package_dir}/sing-box"
+          cp LICENSE "${android_package_dir}/LICENSE"
+          (cd "${GITHUB_WORKSPACE}/dist" && zip -q -r "${android_package_name}.zip" "${android_package_name}")
+          rm -rf "${android_package_dir}"
+
+      - name: Upload Android archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifact-android-cli
+          path: dist/sing-box-*-android-arm64.zip
+          if-no-files-found: error
+
+  build_windows_cli:
+    name: Build Windows amd64 CLI
+    needs: prepare
+    if: needs.prepare.outputs.skip_build != 'true'
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      UPSTREAM_SOURCE_REPO: reF1nd/sing-box
+      UPSTREAM_BRANCH: reF1nd-stable
+      PATCH_FILE: patches/provider.patch
+    steps:
+      - name: Checkout build recipes
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ~1.25.10
+          cache: false
+
+      - name: Cache Go modules & build
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-windows-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-go-windows-
+            ${{ runner.os }}-go-
+
+      - name: Clone source
+        run: |
+          set -euo pipefail
+          rm -rf source dist
+          git clone --depth 1 --branch "${UPSTREAM_BRANCH}" --single-branch "https://github.com/${UPSTREAM_SOURCE_REPO}.git" source
+
+      - name: Apply patch
+        working-directory: source
+        run: |
+          set -euo pipefail
+          patch_path="${GITHUB_WORKSPACE}/${PATCH_FILE}"
+          [[ -f "${patch_path}" ]] || { echo "Patch file not found: ${patch_path}" >&2; exit 1; }
+          if git apply --check "${patch_path}" 2>/dev/null; then
+            git apply "${patch_path}"
+            echo "Patch applied cleanly"
+          else
+            echo "Patch does not apply. Details:" >&2
+            git apply --check -v "${patch_path}" >&2 || true
+            exit 1
+          fi
+
+      - name: Test provider
+        working-directory: source
+        run: |
+          set -euo pipefail
+          go test ./adapter/provider
+
+      - name: Setup build variables
+        working-directory: source
+        run: |
+          set -euo pipefail
+          echo "WINDOWS_BUILD_TAGS=$(cat release/DEFAULT_BUILD_TAGS_WINDOWS)" >> "$GITHUB_ENV"
+          echo "LDFLAGS_SHARED=$(cat release/LDFLAGS)" >> "$GITHUB_ENV"
+
+      - name: Build Windows
+        working-directory: source
+        run: |
+          set -euo pipefail
+          windows_package_name="sing-box-${VERSION}-windows-amd64"
+          windows_package_dir="${GITHUB_WORKSPACE}/dist/${windows_package_name}"
+          mkdir -p "${windows_package_dir}"
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -v -trimpath -o "${windows_package_dir}/sing-box.exe" -tags "${WINDOWS_BUILD_TAGS}" \
+            -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${VERSION}' ${LDFLAGS_SHARED} -s -w -buildid=" ./cmd/sing-box
+          cp LICENSE "${windows_package_dir}/LICENSE"
+
+      - name: Fetch/package libcronet
+        working-directory: source
+        run: |
+          set -euo pipefail
+          windows_package_name="sing-box-${VERSION}-windows-amd64"
+          windows_package_dir="${GITHUB_WORKSPACE}/dist/${windows_package_name}"
+          cronet_go_version="$(cat .github/CRONET_GO_VERSION)"
+          cronet_dir="$(mktemp -d)"
+          trap 'rm -rf "${cronet_dir}"' EXIT
+          git init "${cronet_dir}"
+          git -C "${cronet_dir}" remote add origin https://github.com/sagernet/cronet-go.git
+          git -C "${cronet_dir}" sparse-checkout set --no-cone "/lib/windows_amd64/libcronet.dll"
+          git -C "${cronet_dir}" fetch --depth=1 --filter=blob:none origin "${cronet_go_version}"
+          git -C "${cronet_dir}" checkout FETCH_HEAD
+          if [[ -f "${cronet_dir}/lib/windows_amd64/libcronet.dll" ]]; then
+            cp "${cronet_dir}/lib/windows_amd64/libcronet.dll" "${windows_package_dir}/libcronet.dll"
+          else
+            rm -rf "${cronet_dir}"; mkdir -p "${cronet_dir}"; git init "${cronet_dir}"
+            git -C "${cronet_dir}" remote add origin https://github.com/sagernet/cronet-go.git
+            git -C "${cronet_dir}" fetch --depth=1 origin "${cronet_go_version}"; git -C "${cronet_dir}" checkout FETCH_HEAD
+            CGO_ENABLED=0 go -C "${cronet_dir}" build -v -o "${cronet_dir}/build-naive" ./cmd/build-naive
+            GOPROXY=direct GOSUMDB=off "${cronet_dir}/build-naive" extract-lib --target windows/amd64 -o "${windows_package_dir}"
+          fi
+          [[ -f "${windows_package_dir}/libcronet.dll" ]] || { echo "libcronet.dll is missing" >&2; exit 1; }
+          (cd "${GITHUB_WORKSPACE}/dist" && zip -q -r "${windows_package_name}.zip" "${windows_package_name}")
+          rm -rf "${windows_package_dir}"
+
+      - name: Upload Windows archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifact-windows-cli
+          path: dist/sing-box-*-windows-amd64.zip
+          if-no-files-found: error
+
+  build_android_apk:
+    name: Build Android arm64 APK
+    needs: prepare
+    if: needs.prepare.outputs.skip_build != 'true'
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      UPSTREAM_SOURCE_REPO: reF1nd/sing-box
+      UPSTREAM_BRANCH: reF1nd-stable
+      ANDROID_CLIENT_BRANCH: main
+      PATCH_FILE: patches/provider.patch
+      LOCAL_PROPERTIES_SECRET: ${{ secrets.LOCAL_PROPERTIES }}
+      RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+    steps:
+      - name: Checkout build recipes
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -120,26 +347,19 @@ jobs:
           path: |
             ~/.cache/go-build
             ~/go/pkg/mod
-          key: ${{ runner.os }}-go-stable-${{ github.run_id }}
+          key: ${{ runner.os }}-go-apk-${{ github.run_id }}
           restore-keys: |
-            ${{ runner.os }}-go-stable-
+            ${{ runner.os }}-go-apk-
             ${{ runner.os }}-go-
 
       - name: Clone source
-        if: env.SKIP_BUILD != 'true'
         run: |
           set -euo pipefail
-
-          if ! git ls-remote --exit-code --heads "https://github.com/${UPSTREAM_SOURCE_REPO}.git" "refs/heads/${UPSTREAM_BRANCH}" >/dev/null; then
-            echo "Source branch ${UPSTREAM_BRANCH} not found in ${UPSTREAM_SOURCE_REPO}" >&2
-            exit 1
-          fi
-          rm -rf "${SOURCE_DIR}" "${DIST_DIR}"
-          git clone --depth 1 --branch "${UPSTREAM_BRANCH}" --single-branch "https://github.com/${UPSTREAM_SOURCE_REPO}.git" "${SOURCE_DIR}"
+          rm -rf source dist
+          git clone --depth 1 --branch "${UPSTREAM_BRANCH}" --single-branch "https://github.com/${UPSTREAM_SOURCE_REPO}.git" source
 
       - name: Checkout Android client
-        if: env.SKIP_BUILD != 'true'
-        working-directory: ${{ env.SOURCE_DIR }}
+        working-directory: source
         run: |
           set -euo pipefail
           git submodule update --init clients/android
@@ -148,14 +368,11 @@ jobs:
           git submodule update --init --recursive -v
 
       - name: Apply patch
-        if: env.SKIP_BUILD != 'true'
+        working-directory: source
         run: |
           set -euo pipefail
-
-          patch_path="${WORKSPACE}/${PATCH_FILE}"
+          patch_path="${GITHUB_WORKSPACE}/${PATCH_FILE}"
           [[ -f "${patch_path}" ]] || { echo "Patch file not found: ${patch_path}" >&2; exit 1; }
-          cd "${SOURCE_DIR}"
-          echo "Applying patch: ${patch_path}"
           if git apply --check "${patch_path}" 2>/dev/null; then
             git apply "${patch_path}"
             echo "Patch applied cleanly"
@@ -165,74 +382,12 @@ jobs:
             exit 1
           fi
 
-      - name: Test provider
-        if: env.SKIP_BUILD != 'true'
-        working-directory: ${{ env.SOURCE_DIR }}
-        run: |
-          set -euo pipefail
-          go test ./adapter/provider
-
-      - name: Setup build variables
-        if: env.SKIP_BUILD != 'true'
-        working-directory: ${{ env.SOURCE_DIR }}
-        run: |
-          set -euo pipefail
-
-          echo "ANDROID_BUILD_TAGS=$(cat release/DEFAULT_BUILD_TAGS_OTHERS),with_ebpf" >> "${GITHUB_ENV}"
-          echo "WINDOWS_BUILD_TAGS=$(cat release/DEFAULT_BUILD_TAGS_WINDOWS)" >> "${GITHUB_ENV}"
-          echo "LDFLAGS_SHARED=$(cat release/LDFLAGS)" >> "${GITHUB_ENV}"
-          go install -v ./cmd/internal/build
-
-      - name: Generate eBPF
-        if: env.SKIP_BUILD != 'true'
-        working-directory: ${{ env.SOURCE_DIR }}
-        env:
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-        run: |
-          set -euo pipefail
-
-          if [[ -d common/ebpf ]]; then
-            make -C common/ebpf generate
-            [[ -f common/ebpf/internal/bpfgen/shared_network_bpfel.o ]] || { echo "eBPF object was not generated" >&2; exit 1; }
-          fi
-
-      - name: Build Android
-        if: env.SKIP_BUILD != 'true'
-        working-directory: ${{ env.SOURCE_DIR }}
-        env:
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-          CC: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android23-clang
-          CXX: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android23-clang++
-        run: |
-          set -euo pipefail
-
-          android_package_name="sing-box-${VERSION}-android-arm64"
-          android_package_dir="${DIST_DIR}/${android_package_name}"
-          mkdir -p "${android_package_dir}"
-          CGO_ENABLED=1 GOOS=android GOARCH=arm64 build go build -v -trimpath -o "${android_package_dir}/sing-box" -tags "${ANDROID_BUILD_TAGS}" \
-            -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${VERSION}' ${LDFLAGS_SHARED} -s -w -buildid=" ./cmd/sing-box
-          chmod +x "${android_package_dir}/sing-box"
-          cp LICENSE "${android_package_dir}/LICENSE"
-
-      - name: Package Android
-        if: env.SKIP_BUILD != 'true'
-        run: |
-          set -euo pipefail
-
-          android_package_name="sing-box-${VERSION}-android-arm64"
-          android_package_dir="${DIST_DIR}/${android_package_name}"
-          android_archive="${DIST_DIR}/${android_package_name}.zip"
-          (cd "${DIST_DIR}" && zip -q -r "${android_archive}" "${android_package_name}")
-          rm -rf "${android_package_dir}"
-
       - name: Build Android library
-        if: env.SKIP_BUILD != 'true'
-        working-directory: ${{ env.SOURCE_DIR }}
+        working-directory: source
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           set -euo pipefail
-
           make lib_install
           export PATH="$(go env GOPATH)/bin:${PATH}"
           git tag "${TAG}" -f
@@ -241,15 +396,12 @@ jobs:
           cp libbox.aar libbox-legacy.aar clients/android/app/libs/
 
       - name: Build Android APK
-        if: env.SKIP_BUILD != 'true'
-        working-directory: ${{ env.SOURCE_DIR }}
+        working-directory: source
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-          LOCAL_PROPERTIES_SECRET: ${{ secrets.LOCAL_PROPERTIES }}
-          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
         run: |
           set -euo pipefail
-
+          mkdir -p "${GITHUB_WORKSPACE}/dist"
           go run -v ./cmd/internal/update_android_version --ci --nightly
 
           if [[ -n "${LOCAL_PROPERTIES_SECRET:-}" && -n "${RELEASE_KEYSTORE_BASE64:-}" ]]; then
@@ -285,73 +437,58 @@ jobs:
 
           apk_name=$(basename "${apk_file}")
           echo "Found arm64 APK: ${apk_name}"
-          cp "${apk_file}" "${DIST_DIR}/${apk_name}"
-          echo "APK_NAME=${apk_name}" >> "${GITHUB_ENV}"
+          cp "${apk_file}" "${GITHUB_WORKSPACE}/dist/${apk_name}"
 
-      - name: Build Windows
-        if: env.SKIP_BUILD != 'true'
-        working-directory: ${{ env.SOURCE_DIR }}
-        run: |
-          set -euo pipefail
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifact-android-apk
+          path: dist/*.apk
+          if-no-files-found: error
 
-          windows_package_name="sing-box-${VERSION}-windows-amd64"
-          windows_package_dir="${DIST_DIR}/${windows_package_name}"
-          mkdir -p "${windows_package_dir}"
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -v -trimpath -o "${windows_package_dir}/sing-box.exe" -tags "${WINDOWS_BUILD_TAGS}" \
-            -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${VERSION}' ${LDFLAGS_SHARED} -s -w -buildid=" ./cmd/sing-box
-          cp LICENSE "${windows_package_dir}/LICENSE"
-
-      - name: Fetch/package libcronet
-        if: env.SKIP_BUILD != 'true'
-        working-directory: ${{ env.SOURCE_DIR }}
-        run: |
-          set -euo pipefail
-
-          windows_package_name="sing-box-${VERSION}-windows-amd64"
-          windows_package_dir="${DIST_DIR}/${windows_package_name}"
-          cronet_go_version="$(cat .github/CRONET_GO_VERSION)"
-          cronet_dir="$(mktemp -d)"
-          trap 'rm -rf "${cronet_dir}"' EXIT
-          git init "${cronet_dir}"
-          git -C "${cronet_dir}" remote add origin https://github.com/sagernet/cronet-go.git
-          git -C "${cronet_dir}" sparse-checkout set --no-cone "/lib/windows_amd64/libcronet.dll"
-          git -C "${cronet_dir}" fetch --depth=1 --filter=blob:none origin "${cronet_go_version}"
-          git -C "${cronet_dir}" checkout FETCH_HEAD
-          if [[ -f "${cronet_dir}/lib/windows_amd64/libcronet.dll" ]]; then
-            cp "${cronet_dir}/lib/windows_amd64/libcronet.dll" "${windows_package_dir}/libcronet.dll"
-          else
-            rm -rf "${cronet_dir}"; mkdir -p "${cronet_dir}"; git init "${cronet_dir}"
-            git -C "${cronet_dir}" remote add origin https://github.com/sagernet/cronet-go.git
-            git -C "${cronet_dir}" fetch --depth=1 origin "${cronet_go_version}"; git -C "${cronet_dir}" checkout FETCH_HEAD
-            CGO_ENABLED=0 go -C "${cronet_dir}" build -v -o "${cronet_dir}/build-naive" ./cmd/build-naive
-            GOPROXY=direct GOSUMDB=off "${cronet_dir}/build-naive" extract-lib --target windows/amd64 -o "${windows_package_dir}"
-          fi
-          [[ -f "${windows_package_dir}/libcronet.dll" ]] || { echo "libcronet.dll is missing" >&2; exit 1; }
-
-      - name: Package Windows
-        if: env.SKIP_BUILD != 'true'
-        run: |
-          set -euo pipefail
-
-          windows_package_name="sing-box-${VERSION}-windows-amd64"
-          windows_package_dir="${DIST_DIR}/${windows_package_name}"
-          windows_archive="${DIST_DIR}/${windows_package_name}.zip"
-          (cd "${DIST_DIR}" && zip -q -r "${windows_archive}" "${windows_package_name}")
-          rm -rf "${windows_package_dir}"
+  publish:
+    name: Publish release
+    needs: [prepare, build_android_cli, build_windows_cli, build_android_apk]
+    if: needs.prepare.outputs.skip_build != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+      UPSTREAM_SOURCE_REPO: reF1nd/sing-box
+      UPSTREAM_BRANCH: reF1nd-stable
+      PATCH_FILE: patches/provider.patch
+      RELEASE_TITLE_SUFFIX: stable
+      PRERELEASE_FLAG: false
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: artifact-*
+          path: dist
+          merge-multiple: true
 
       - name: Publish release
-        if: env.SKIP_BUILD != 'true'
         run: |
           set -euo pipefail
 
-          source_sha="$(git -C "${SOURCE_DIR}" rev-parse HEAD)"
           release_page_url="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
           download_base_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
           android_package_name="sing-box-${VERSION}-android-arm64"
           windows_package_name="sing-box-${VERSION}-windows-amd64"
-          android_archive="${DIST_DIR}/${android_package_name}.zip"
-          windows_archive="${DIST_DIR}/${windows_package_name}.zip"
-          apk_path="${DIST_DIR}/${APK_NAME}"
+          android_archive="dist/${android_package_name}.zip"
+          windows_archive="dist/${windows_package_name}.zip"
+
+          apk_file=$(find dist -name "*arm64-v8a.apk" | head -n 1)
+          if [[ -z "${apk_file}" || ! -f "${apk_file}" ]]; then
+            echo "APK file missing in dist" >&2
+            exit 1
+          fi
+          apk_name=$(basename "${apk_file}")
+
           notes="$(cat <<EOF
           Automated reF1nd ${RELEASE_TITLE_SUFFIX} builds for Android arm64 and Windows amd64.
 
@@ -359,18 +496,18 @@ jobs:
           | --- | --- |
           | Release | [${TAG}](${release_page_url}) |
           | 源码 | [${UPSTREAM_SOURCE_REPO}@${UPSTREAM_BRANCH}](https://github.com/${UPSTREAM_SOURCE_REPO}/tree/${UPSTREAM_BRANCH}) |
-          | 源码提交 | [${source_sha}](https://github.com/${UPSTREAM_SOURCE_REPO}/commit/${source_sha}) |
+          | 源码提交 | [${SOURCE_SHA}](https://github.com/${UPSTREAM_SOURCE_REPO}/commit/${SOURCE_SHA}) |
           | 补丁 | [${PATCH_FILE}](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/${PATCH_FILE}) |
 
           | 平台 | 架构 | 下载 |
           | --- | --- | --- |
-          | Android (APK) | arm64 | [${APK_NAME}](${download_base_url}/${APK_NAME}) |
+          | Android (APK) | arm64 | [${apk_name}](${download_base_url}/${apk_name}) |
           | Android (Core) | arm64 | [${android_package_name}.zip](${download_base_url}/${android_package_name}.zip) |
           | Windows (Core) | amd64 | [${windows_package_name}.zip](${download_base_url}/${windows_package_name}.zip) |
           EOF
           )"
 
-          release_assets=("${android_archive}" "${windows_archive}" "${apk_path}")
+          release_assets=("${android_archive}" "${windows_archive}" "${apk_file}")
           if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release upload "${TAG}" --repo "${GITHUB_REPOSITORY}" "${release_assets[@]}" --clobber
             gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false --prerelease=false --notes "${notes}"
