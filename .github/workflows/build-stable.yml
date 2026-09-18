@@ -276,7 +276,8 @@ jobs:
       VERSION: ${{ needs.prepare.outputs.version }}
       UPSTREAM_SOURCE_REPO: reF1nd/sing-box
       UPSTREAM_BRANCH: reF1nd-stable
-      ANDROID_CLIENT_BRANCH: main
+      UPSTREAM_ANDROID_REPO: reF1nd/sing-box-for-android
+      ANDROID_BRANCH: reF1nd-stable
       PATCH_FILE: patches/provider.patch
       LOCAL_PROPERTIES_SECRET: ${{ secrets.LOCAL_PROPERTIES }}
       RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
@@ -308,11 +309,17 @@ jobs:
         with:
           cache-provider: basic
 
-      - name: Clone source
+      - name: Clone sing-box source
         run: |
           set -euo pipefail
-          rm -rf source dist
+          rm -rf source dist sing-box-for-android
           git clone --depth 1 --branch "${UPSTREAM_BRANCH}" --single-branch "https://github.com/${UPSTREAM_SOURCE_REPO}.git" source
+
+      - name: Clone Android client
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${ANDROID_BRANCH}" --single-branch "https://github.com/${UPSTREAM_ANDROID_REPO}.git" sing-box-for-android
+          git -C sing-box-for-android submodule update --init --recursive -v || true
 
       - name: Cache Go modules
         uses: actions/cache@v5
@@ -321,13 +328,6 @@ jobs:
           key: ${{ runner.os }}-go-mod-${{ hashFiles('source/go.sum') }}
           restore-keys: |
             ${{ runner.os }}-go-mod-
-
-      - name: Checkout Android client
-        working-directory: source
-        run: |
-          set -euo pipefail
-          git submodule update --init clients/android
-          git -C clients/android checkout "${ANDROID_CLIENT_BRANCH}" || true
 
       - name: Apply patch
         working-directory: source
@@ -356,22 +356,22 @@ jobs:
           # 优化点1：跳过无用的 legacy 变体二次编译，只编译需要的 SDK 24 libbox.aar
           sed -i '/Build legacy variant/i \    return' cmd/internal/build_libbox/main.go
           go run ./cmd/internal/build_libbox -target android -platform android/arm64
-          mkdir -p clients/android/app/libs
-          cp libbox.aar clients/android/app/libs/libbox.aar
-          cp libbox.aar clients/android/app/libs/libbox-legacy.aar
+          mkdir -p "${GITHUB_WORKSPACE}/sing-box-for-android/app/libs"
+          cp libbox.aar "${GITHUB_WORKSPACE}/sing-box-for-android/app/libs/libbox.aar"
+          cp libbox.aar "${GITHUB_WORKSPACE}/sing-box-for-android/app/libs/libbox-legacy.aar"
 
       - name: Build Android APK
-        working-directory: source
+        working-directory: sing-box-for-android
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           set -euo pipefail
           mkdir -p "${GITHUB_WORKSPACE}/dist"
-          go run -v ./cmd/internal/update_android_version --ci --nightly
+          sed -i "s/^VERSION_NAME=.*/VERSION_NAME=${VERSION}/" version.properties
 
           if [[ -n "${LOCAL_PROPERTIES_SECRET:-}" && -n "${RELEASE_KEYSTORE_BASE64:-}" ]]; then
             echo "Using configured release keystore and credentials from secrets."
-            echo "${RELEASE_KEYSTORE_BASE64}" | base64 --decode > clients/android/app/release.keystore
+            echo "${RELEASE_KEYSTORE_BASE64}" | base64 --decode > app/release.keystore
             export LOCAL_PROPERTIES="${LOCAL_PROPERTIES_SECRET}"
           elif [[ -n "${LOCAL_PROPERTIES_SECRET:-}" ]]; then
             echo "Using configured LOCAL_PROPERTIES."
@@ -379,7 +379,7 @@ jobs:
           else
             echo "No keystore secrets configured, generating self-signed keystore for release build..."
             keytool -genkeypair -v \
-              -keystore clients/android/app/release.keystore \
+              -keystore app/release.keystore \
               -alias sing-box \
               -keyalg RSA \
               -keysize 2048 \
@@ -392,10 +392,10 @@ jobs:
           fi
 
           # 优化点2：精简打包目标，避免重复生成 5 个不同 ABI 的 APK 包
-          sed -i 's/include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")/include("arm64-v8a")/' clients/android/app/build.gradle.kts
-          sed -i 's/isUniversalApk = true/isUniversalApk = false/' clients/android/app/build.gradle.kts
+          sed -i 's/include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")/include("arm64-v8a")/' app/build.gradle.kts
+          sed -i 's/isUniversalApk = true/isUniversalApk = false/' app/build.gradle.kts
 
-          cd clients/android
+          chmod +x gradlew
           # 优化点3：跳过无用的静态检查和单测，直奔 APK 打包
           ./gradlew --build-cache --parallel --no-daemon :app:assembleOtherRelease \
             -x lint -x lintVitalOtherRelease -x test -x detekt
