@@ -32,6 +32,7 @@ jobs:
       UPSTREAM_SOURCE_REPO: reF1nd/sing-box
       UPSTREAM_RELEASE_REPO: reF1nd/sing-box-releases
       UPSTREAM_BRANCH: reF1nd-testing
+      ANDROID_CLIENT_BRANCH: dev
       PATCH_FILE: patches/provider.patch
       INPUT_TAG: ${{ inputs.tag }}
       FORCE_BUILD: ${{ inputs.force_build }}
@@ -106,7 +107,18 @@ jobs:
         id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r29
+          ndk-version: r28
+
+      - name: Setup OpenJDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-provider: basic
 
       - name: Cache Go modules & build
         uses: actions/cache@v5
@@ -130,6 +142,16 @@ jobs:
           fi
           rm -rf "${SOURCE_DIR}" "${DIST_DIR}"
           git clone --depth 1 --branch "${UPSTREAM_BRANCH}" --single-branch "https://github.com/${UPSTREAM_SOURCE_REPO}.git" "${SOURCE_DIR}"
+
+      - name: Checkout Android client
+        if: env.SKIP_BUILD != 'true'
+        working-directory: ${{ env.SOURCE_DIR }}
+        run: |
+          set -euo pipefail
+          git submodule update --init clients/android
+          cd clients/android
+          git checkout "${ANDROID_CLIENT_BRANCH}" || true
+          git submodule update --init --recursive -v
 
       - name: Apply patch
         if: env.SKIP_BUILD != 'true'
@@ -209,6 +231,69 @@ jobs:
           (cd "${DIST_DIR}" && zip -q -r "${android_archive}" "${android_package_name}")
           rm -rf "${android_package_dir}"
 
+      - name: Build Android library
+        if: env.SKIP_BUILD != 'true'
+        working-directory: ${{ env.SOURCE_DIR }}
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          set -euo pipefail
+
+          make lib_install
+          export PATH="$(go env GOPATH)/bin:${PATH}"
+          git tag "${TAG}" -f
+          go run ./cmd/internal/build_libbox -target android -platform android/arm64
+          mkdir -p clients/android/app/libs
+          cp libbox.aar libbox-legacy.aar clients/android/app/libs/
+
+      - name: Build Android APK
+        if: env.SKIP_BUILD != 'true'
+        working-directory: ${{ env.SOURCE_DIR }}
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          LOCAL_PROPERTIES_SECRET: ${{ secrets.LOCAL_PROPERTIES }}
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+
+          go run -v ./cmd/internal/update_android_version --ci --nightly
+
+          if [[ -n "${LOCAL_PROPERTIES_SECRET:-}" && -n "${RELEASE_KEYSTORE_BASE64:-}" ]]; then
+            echo "Using configured release keystore and credentials from secrets."
+            echo "${RELEASE_KEYSTORE_BASE64}" | base64 --decode > clients/android/app/release.keystore
+            export LOCAL_PROPERTIES="${LOCAL_PROPERTIES_SECRET}"
+          elif [[ -n "${LOCAL_PROPERTIES_SECRET:-}" ]]; then
+            echo "Using configured LOCAL_PROPERTIES."
+            export LOCAL_PROPERTIES="${LOCAL_PROPERTIES_SECRET}"
+          else
+            echo "No keystore secrets configured, generating self-signed keystore for release build..."
+            keytool -genkeypair -v \
+              -keystore clients/android/app/release.keystore \
+              -alias sing-box \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass android \
+              -keypass android \
+              -dname "CN=sing-box, OU=sing-box, O=sing-box, L=Unknown, ST=Unknown, C=US"
+            local_props_content=$(printf "KEYSTORE_PASS=android\nALIAS_NAME=sing-box\nALIAS_PASS=android\n")
+            export LOCAL_PROPERTIES=$(echo -n "${local_props_content}" | base64 -w 0)
+          fi
+
+          cd clients/android
+          ./gradlew --build-cache --parallel :app:assembleOtherRelease
+
+          apk_file=$(find app/build/outputs/apk/other/release -name "*arm64-v8a.apk" | head -n 1)
+          if [[ -z "${apk_file}" || ! -f "${apk_file}" ]]; then
+            echo "arm64 APK not found in app/build/outputs/apk/other/release" >&2
+            exit 1
+          fi
+
+          apk_name=$(basename "${apk_file}")
+          echo "Found arm64 APK: ${apk_name}"
+          cp "${apk_file}" "${DIST_DIR}/${apk_name}"
+          echo "APK_NAME=${apk_name}" >> "${GITHUB_ENV}"
+
       - name: Build Windows
         if: env.SKIP_BUILD != 'true'
         working-directory: ${{ env.SOURCE_DIR }}
@@ -272,6 +357,7 @@ jobs:
           windows_package_name="sing-box-${VERSION}-windows-amd64"
           android_archive="${DIST_DIR}/${android_package_name}.zip"
           windows_archive="${DIST_DIR}/${windows_package_name}.zip"
+          apk_path="${DIST_DIR}/${APK_NAME}"
           notes="$(cat <<EOF
           Automated reF1nd ${RELEASE_TITLE_SUFFIX} builds for Android arm64 and Windows amd64.
 
@@ -284,12 +370,13 @@ jobs:
 
           | 平台 | 架构 | 下载 |
           | --- | --- | --- |
-          | Android | arm64 | [${android_package_name}.zip](${download_base_url}/${android_package_name}.zip) |
-          | Windows | amd64 | [${windows_package_name}.zip](${download_base_url}/${windows_package_name}.zip) |
+          | Android (APK) | arm64 | [${APK_NAME}](${download_base_url}/${APK_NAME}) |
+          | Android (Core) | arm64 | [${android_package_name}.zip](${download_base_url}/${android_package_name}.zip) |
+          | Windows (Core) | amd64 | [${windows_package_name}.zip](${download_base_url}/${windows_package_name}.zip) |
           EOF
           )"
 
-          release_assets=("${android_archive}" "${windows_archive}")
+          release_assets=("${android_archive}" "${windows_archive}" "${apk_path}")
           if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release upload "${TAG}" --repo "${GITHUB_REPOSITORY}" "${release_assets[@]}" --clobber
             gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false --prerelease --notes "${notes}"
