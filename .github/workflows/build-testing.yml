@@ -84,21 +84,11 @@ jobs:
           echo "source_sha=${source_sha}" >> "$GITHUB_OUTPUT"
           echo "skip_build=${skip_build}" >> "$GITHUB_OUTPUT"
 
-  build_cli:
-    name: Build ${{ matrix.target }} CLI
+  build_android_cli:
+    name: Build Android arm64 CLI
     needs: prepare
     if: needs.prepare.outputs.skip_build != 'true'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: android-arm64
-            goos: android
-            needs_ndk: true
-          - target: windows-amd64
-            goos: windows
-            needs_ndk: false
     env:
       TAG: ${{ needs.prepare.outputs.tag }}
       VERSION: ${{ needs.prepare.outputs.version }}
@@ -116,7 +106,6 @@ jobs:
           cache: false
 
       - name: Setup Android NDK
-        if: matrix.needs_ndk
         id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
@@ -151,13 +140,8 @@ jobs:
             exit 1
           fi
 
-      - name: Build Android
-        if: matrix.goos == 'android'
+      - name: Build Android CLI
         working-directory: source
-        env:
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-          CC: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android23-clang
-          CXX: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android23-clang++
         run: |
           set -euo pipefail
           go install -v ./cmd/internal/build
@@ -166,13 +150,15 @@ jobs:
             [[ -f common/ebpf/internal/bpfgen/shared_network_bpfel.o ]] || { echo "eBPF object was not generated" >&2; exit 1; }
           fi
 
-          package_name="sing-box-${VERSION}-${{ matrix.target }}"
+          package_name="sing-box-${VERSION}-android-arm64"
           package_dir="${GITHUB_WORKSPACE}/dist/${package_name}"
           mkdir -p "${package_dir}"
 
           android_tags="$(cat release/DEFAULT_BUILD_TAGS_OTHERS),with_ebpf"
           ldflags_shared="$(cat release/LDFLAGS)"
 
+          CC="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android23-clang" \
+          CXX="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android23-clang++" \
           CGO_ENABLED=1 GOOS=android GOARCH=arm64 build go build -v -trimpath -o "${package_dir}/sing-box" -tags "${android_tags}" \
             -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${VERSION}' ${ldflags_shared} -s -w -buildid=" ./cmd/sing-box
           chmod +x "${package_dir}/sing-box"
@@ -180,12 +166,70 @@ jobs:
           (cd "${GITHUB_WORKSPACE}/dist" && zip -q -r "${package_name}.zip" "${package_name}")
           rm -rf "${package_dir}"
 
-      - name: Build Windows
-        if: matrix.goos == 'windows'
+      - name: Upload Android CLI archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifact-android-arm64
+          path: dist/sing-box-*-android-arm64.zip
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  build_windows_cli:
+    name: Build Windows amd64 CLI
+    needs: prepare
+    if: needs.prepare.outputs.skip_build != 'true'
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      UPSTREAM_SOURCE_REPO: reF1nd/sing-box
+      UPSTREAM_BRANCH: reF1nd-testing
+      PATCH_FILE: patches/provider.patch
+    steps:
+      - name: Checkout build recipes
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: 1.26.6
+          cache: false
+
+      - name: Clone source
+        run: |
+          set -euo pipefail
+          rm -rf source dist
+          git clone --depth 1 --branch "${UPSTREAM_BRANCH}" --single-branch "https://github.com/${UPSTREAM_SOURCE_REPO}.git" source
+
+      - name: Cache Go modules
+        uses: actions/cache@v5
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-mod-${{ hashFiles('source/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-mod-
+
+      - name: Apply patch
         working-directory: source
         run: |
           set -euo pipefail
-          package_name="sing-box-${VERSION}-${{ matrix.target }}"
+          patch_path="${GITHUB_WORKSPACE}/${PATCH_FILE}"
+          [[ -f "${patch_path}" ]] || { echo "Patch file not found: ${patch_path}" >&2; exit 1; }
+          if git apply --check "${patch_path}" 2>/dev/null; then
+            git apply "${patch_path}"
+            echo "Patch applied cleanly"
+          else
+            echo "Patch does not apply. Details:" >&2
+            git apply --check -v "${patch_path}" >&2 || true
+            exit 1
+          fi
+
+      - name: Build Windows CLI
+        working-directory: source
+        run: |
+          set -euo pipefail
+          package_name="sing-box-${VERSION}-windows-amd64"
           package_dir="${GITHUB_WORKSPACE}/dist/${package_name}"
           mkdir -p "${package_dir}"
 
@@ -217,11 +261,11 @@ jobs:
           (cd "${GITHUB_WORKSPACE}/dist" && zip -q -r "${package_name}.zip" "${package_name}")
           rm -rf "${package_dir}"
 
-      - name: Upload CLI archive
+      - name: Upload Windows CLI archive
         uses: actions/upload-artifact@v4
         with:
-          name: artifact-${{ matrix.target }}
-          path: dist/sing-box-*-${{ matrix.target }}.zip
+          name: artifact-windows-amd64
+          path: dist/sing-box-*-windows-amd64.zip
           compression-level: 0
           retention-days: 1
           if-no-files-found: error
@@ -381,7 +425,7 @@ jobs:
 
   publish:
     name: Publish release
-    needs: [prepare, build_cli, build_android_apk]
+    needs: [prepare, build_android_cli, build_windows_cli, build_android_apk]
     if: needs.prepare.outputs.skip_build != 'true'
     runs-on: ubuntu-latest
     permissions:
