@@ -166,11 +166,25 @@ jobs:
           (cd "${GITHUB_WORKSPACE}/dist" && zip -q -r "${package_name}.zip" "${package_name}")
           rm -rf "${package_dir}"
 
+          mini_package_name="sing-box-${VERSION}-android-arm64-mini"
+          mini_package_dir="${GITHUB_WORKSPACE}/dist/${mini_package_name}"
+          mkdir -p "${mini_package_dir}"
+          mini_tags="with_quic,with_utls,with_clash_api,with_ebpf"
+
+          CC="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android23-clang" \
+          CXX="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android23-clang++" \
+          CGO_ENABLED=1 GOOS=android GOARCH=arm64 build go build -v -trimpath -o "${mini_package_dir}/sing-box" -tags "${mini_tags}" \
+            -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${VERSION}' ${ldflags_shared} -s -w -buildid=" ./cmd/sing-box
+          chmod +x "${mini_package_dir}/sing-box"
+          cp LICENSE "${mini_package_dir}/LICENSE"
+          (cd "${GITHUB_WORKSPACE}/dist" && zip -q -r "${mini_package_name}.zip" "${mini_package_name}")
+          rm -rf "${mini_package_dir}"
+
       - name: Upload Android CLI archive
         uses: actions/upload-artifact@v4
         with:
           name: artifact-android-arm64
-          path: dist/sing-box-*-android-arm64.zip
+          path: dist/sing-box-*-android-arm64*.zip
           compression-level: 0
           retention-days: 1
           if-no-files-found: error
@@ -468,8 +482,10 @@ jobs:
           release_page_url="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
           download_base_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
           android_package_name="sing-box-${VERSION}-android-arm64"
+          android_mini_package_name="sing-box-${VERSION}-android-arm64-mini"
           windows_package_name="sing-box-${VERSION}-windows-amd64"
           android_archive="dist/${android_package_name}.zip"
+          android_mini_archive="dist/${android_mini_package_name}.zip"
           windows_archive="dist/${windows_package_name}.zip"
 
           apk_file=$(find dist -name "*arm64-v8a.apk" | head -n 1)
@@ -493,11 +509,12 @@ jobs:
           | --- | --- | --- |
           | Android (APK) | arm64 | [${apk_name}](${download_base_url}/${apk_name}) |
           | Android (Core) | arm64 | [${android_package_name}.zip](${download_base_url}/${android_package_name}.zip) |
+          | Android (Core mini) | arm64 | [${android_mini_package_name}.zip](${download_base_url}/${android_mini_package_name}.zip) |
           | Windows (Core) | amd64 | [${windows_package_name}.zip](${download_base_url}/${windows_package_name}.zip) |
           EOF
           )"
 
-          release_assets=("${android_archive}" "${windows_archive}" "${apk_file}")
+          release_assets=("${android_archive}" "${android_mini_archive}" "${windows_archive}" "${apk_file}")
           if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release upload "${TAG}" --repo "${GITHUB_REPOSITORY}" "${release_assets[@]}" --clobber
             gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false --prerelease=true --notes "${notes}"

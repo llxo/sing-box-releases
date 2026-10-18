@@ -8,4 +8,5 @@
 | --- | --- | --- |
 | [`SFA-<version>-arm64-v8a.apk`](https://github.com/reF1nd/sing-box-releases/releases) | Android arm64 | Sing-Box Android 客户端安装包（APK） |
 | [`sing-box-<version>-android-arm64.zip`](https://github.com/reF1nd/sing-box-releases/releases) | Android arm64 | `sing-box` 命令行核心和 `LICENSE`（启用 eBPF） |
+| [`sing-box-<version>-android-arm64-mini.zip`](https://github.com/reF1nd/sing-box-releases/releases) | Android arm64 | `sing-box` 精简版命令行核心（仅包含 quic、utls、clash_api、ebpf） |
 | [`sing-box-<version>-windows-amd64.zip`](https://github.com/reF1nd/sing-box-releases/releases) | Windows amd64 | `sing-box.exe`、`libcronet.dll` 和 `LICENSE` |
